@@ -34,6 +34,7 @@ def main():
     quote_scale = 6
     start_capital = 0
     min_notional = 0
+    max_weight_bps = 10000
     warmup_left = 60
 
     ema50 = None
@@ -69,6 +70,8 @@ def main():
             start_capital = int(cap.get("quote_units", 0))
             fees = msg.get("fees") or {}
             min_notional = int(fees.get("min_notional_quote_units", 0))
+            caps = msg.get("caps") or {}
+            max_weight_bps = int(caps.get("max_weight_bps", 10000))
             warmup_left = int(msg.get("warmup_bars", 60))
             equity_peak = start_capital
             continue
@@ -173,15 +176,27 @@ def main():
                     and dd <= DD_GUARD
                     and cash > min_notional
                 ):
-                    orders.append(
-                        {
-                            "side": "buy",
-                            "client_id": "b%d" % seq,
-                            "symbol": symbol,
-                            "notional_quote_units": str(cash),
-                            "max_slippage_bps": 100,
-                        }
-                    )
+                    # Respect the hello weight cap: position value after the
+                    # buy may not exceed max_weight_bps of equity. Flat here,
+                    # so equity == cash and the cap is cash * weight / 10000.
+                    # At 10000 this is a no-op (full-size buy).
+                    buy_notional = cash
+                    if max_weight_bps < 10000:
+                        buy_notional = min(
+                            cash, equity * max_weight_bps // 10000
+                        )
+                    if buy_notional <= min_notional:
+                        buy_notional = 0
+                    if buy_notional > 0:
+                        orders.append(
+                            {
+                                "side": "buy",
+                                "client_id": "b%d" % seq,
+                                "symbol": symbol,
+                                "notional_quote_units": str(buy_notional),
+                                "max_slippage_bps": 100,
+                            }
+                        )
 
         out.write(json.dumps({"type": "reply", "seq": seq, "orders": orders}) + "\n")
         out.flush()
